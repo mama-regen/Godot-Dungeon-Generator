@@ -1,3 +1,4 @@
+using DungeonGenerator.scripts;
 using DungeonGenerator.scripts.enums;
 using Godot;
 using SeidelTest.triangulator;
@@ -24,22 +25,18 @@ public partial class Room : Node3D
     {
         base._Ready();
 
-        _border = GetNode<Polygon2D>("Shape/Border");
-        var holes = GetNode<Node2D>("Shape/Holes");
-        _holes = new List<Polygon2D>();
-        foreach (var hole in holes.GetChildren())
-        {
-            if (hole is Polygon2D) ((List<Polygon2D>)_holes).Add((Polygon2D)hole);
-        }
-
         if (ResourceLoader.Exists("res://room_" + RoomName))
         {
             ArrayMesh aMesh = ResourceLoader.Load<ArrayMesh>("res://room_" + RoomName);
             AddMesh(aMesh);
             return;
         }
-        if (_border == null) return;
-        BuildMesh();
+
+        var polygons = this.ScanChildren<Polygon2D>();
+        _border = polygons.FirstOrDefault();
+        _holes = polygons.Skip(1);
+
+        if (_border != null) BuildMesh();
     }
 
     private void BuildMesh()
@@ -52,7 +49,15 @@ public partial class Room : Node3D
         //Iterate through points, setting shapeV and correcting using the shape position, offset and scale;
         for (int i = 0; i < _shapeV.Length; i++)
         {
-            var target = (i == 0 ? _border : _holes.ElementAt(i - 1));
+            //var target = (i == 0 ? _border : _holes.ElementAt(i - 1));
+
+            Polygon2D target;
+            if (i == 0) target = _border;
+            else if (i - 1 < _holes.Count()) target = _holes.ElementAt(i - 1);
+            else return;
+
+            _shapeV[i] = new Vector2[target.Polygon.Length];
+
             for (int j = 0; j < target!.Polygon.Length; j++)
             {
                 _shapeV[i][j] = (target.Polygon[j] + target.Position + target.Offset) * target.Scale;
@@ -69,13 +74,13 @@ public partial class Room : Node3D
             min.X = Math.Min(min.X, _shapeV[0][i].X);
             min.Y = Math.Min(min.Y, _shapeV[0][i].Y);
         }
-        
+
         //Move points over by origin
         for (int i = 0; i < _shapeV.Length; i++)
         {
             for (int j = 0; j < _shapeV[i].Length; j++) _shapeV[i][j] = _shapeV[i][j] + min - max;
         }
-        
+
         //Generate triangles for solid shape and shape with holes included
         var tris = Triangulator.Triangulate(_shapeV);
         var sans_holes = (int)Holes < 2 ? Triangulator.Triangulate(new Vector2[1][] { _shapeV[0] }) : new Godot.Collections.Array<Vector3>();
@@ -102,8 +107,12 @@ public partial class Room : Node3D
             else limit = Holes == HoleOption.FloorOnly ? 1 : _shapeV.Length;
             for (int i = 0; i < limit; i++)
             {
-                foreach (var p in _shapeV[i]) verts.Add(new Vector3(p.X, WallHeight * (f == 0 ? -0.5F : 0.5F), p.Y));
-                normals.Add(f == 0 ? Vector3.Up : Vector3.Down);
+                foreach (var p in _shapeV[i])
+                {
+                    verts.Add(new Vector3(p.X, WallHeight * (f == 0 ? -0.5F : 0.5F), p.Y));
+                    normals.Add(f == 0 ? Vector3.Up : Vector3.Down);
+                    uvs.Add(p / max);
+                }
             }
             if (f == 0) offset = verts.Count;
         }
@@ -123,10 +132,6 @@ public partial class Room : Node3D
                 var q = verts[(int)tri.Y + offset * f];
                 var r = verts[(int)tri.Z + offset * f];
 
-                uvs.Add((new Vector2(p.X, p.Z)) / max);
-                uvs.Add((new Vector2(q.X, q.Z)) / max);
-                uvs.Add((new Vector2(r.X, r.Z)) / max);
-
                 indices.Add((int)tri.X + offset * f);
                 indices.Add((int)tri.Y + offset * f);
                 indices.Add((int)tri.Z + offset * f);
@@ -141,8 +146,10 @@ public partial class Room : Node3D
             {
                 var p = i;
                 var q = p + offset;
-                var r = (i + 1) % _shapeV.Length;
+                var r = (i + 1) % _shapeV[x].Length;
                 var s = r + offset;
+
+                GD.Print("WALL POINTS: [" + p.ToString() + ", " + q.ToString() + ", " + r.ToString() + ", " + s.ToString() + "] | Length: [" + normals.Count + "]");
 
                 indices.AddRange(new[] { q, p, s });
                 indices.AddRange(new[] { r, p, s });
