@@ -14,12 +14,16 @@ public partial class Room : Node3D
 
     [Export]
     public string RoomName { get; set; } = "";
-    [Export]
+    [Export(PropertyHint.Enum, "Floor,Ceiling,Both,Column")]
     public HoleOption Holes { get; set; } = HoleOption.Both;
+    [Export]
+    public float ReducePointScale { get; set; } = 50.0F;
     [Export]
     public float WallHeight { get; set; } = 1.0F;
     [Export]
     public bool SaveMesh { get; set; } = false;
+    [ExportToolButton("Rebuild Mesh")]
+    public Callable RebuildButton => Callable.From(RebuildMesh);
 
     public override void _Ready()
     {
@@ -32,15 +36,23 @@ public partial class Room : Node3D
             return;
         }
 
-        var polygons = this.ScanChildren<Polygon2D>();
-        _border = polygons.FirstOrDefault();
-        _holes = polygons.Skip(1);
+        BuildMesh();
+    }
 
-        if (_border != null) BuildMesh();
+    private void RebuildMesh()
+    {
+        var existing = this.ScanChildren<MeshInstance3D>();
+        if (existing != null && existing.Count() > 0) { RemoveChild(existing.ElementAt(0)); }
+        BuildMesh();
     }
 
     private void BuildMesh()
     {
+        //Scan for polygons
+        var polygons = this.ScanChildren<Polygon2D>();
+        _border = polygons.FirstOrDefault();
+        _holes = polygons.Skip(1);
+
         if (_border == null) return;
 
         //Init array to hold border + holes corrected values
@@ -76,6 +88,7 @@ public partial class Room : Node3D
         }
 
         //Move points over by origin
+        GD.Print("SHAPE V LENGTH: [" + _shapeV.Length.ToString() + "]");
         for (int i = 0; i < _shapeV.Length; i++)
         {
             for (int j = 0; j < _shapeV[i].Length; j++) _shapeV[i][j] = _shapeV[i][j] + min - max;
@@ -94,9 +107,8 @@ public partial class Room : Node3D
         //Init mesh components
         var verts = new Godot.Collections.Array<Vector3>();
         var uvs = new Godot.Collections.Array<Vector2>();
-        var normals = new Godot.Collections.Array<Vector3>();
-        var indices = new Godot.Collections.Array<int>();
-        var normCount = new Godot.Collections.Array<int>();
+        var normals = new Godot.Collections.Array<Vector4>();
+        var indices = new Godot.Collections.Array<int>();        
 
         //And verts with offset for floor and ceiling, keeping origin at 0;
         var offset = 0;
@@ -109,32 +121,38 @@ public partial class Room : Node3D
             {
                 foreach (var p in _shapeV[i])
                 {
-                    verts.Add(new Vector3(p.X, WallHeight * (f == 0 ? -0.5F : 0.5F), p.Y));
-                    normals.Add(f == 0 ? Vector3.Up : Vector3.Down);
+                    var point = new Vector3(p.X / ReducePointScale, WallHeight * (f == 0 ? -0.5F : 0.5F), p.Y / ReducePointScale);
+                    verts.Add(point);
+                    normals.Add(new Vector4(0, f == 0 ? 1 : -1, 0, 1));
                     uvs.Add(p / max);
                 }
             }
             if (f == 0) offset = verts.Count;
         }
 
-        //Normal for each vert. We've added 1 for each so far.
-        normCount.Resize(verts.Count);
-        normCount.Fill(1);
-
         //Add UVs and triangles for floor and ceiling
         for (int f = 0; f < 2; f++)
         {
-            var target = tris;
-            if ((f == 0 && Holes == HoleOption.CeilingOnly) || (f == 1 && Holes == HoleOption.FloorOnly)) target = sans_holes;
+            Godot.Collections.Array<Vector3> target;
+            if (f == 0 && Holes == HoleOption.CeilingOnly) target = sans_holes;
+            else if (f == 1 && Holes == HoleOption.FloorOnly) target = sans_holes;
+            else target = tris;
             foreach (Vector3 tri in target)
             {
-                var p = verts[(int)tri.X + offset * f];
-                var q = verts[(int)tri.Y + offset * f];
-                var r = verts[(int)tri.Z + offset * f];
+                var p = (int)tri.X + offset * f;
+                var q = (int)tri.Y + offset * f;
+                var r = (int)tri.Z + offset * f;
+ 
+                if (Clockwise(verts[p], verts[q], verts[r]) == (f == 0))
+                {
+                    var _p = p;
+                    p = r;
+                    r = _p;
+                }
 
-                indices.Add((int)tri.X + offset * f);
-                indices.Add((int)tri.Y + offset * f);
-                indices.Add((int)tri.Z + offset * f);
+                indices.Add(p);
+                indices.Add(q);
+                indices.Add(r);
             }
         }
 
@@ -149,31 +167,22 @@ public partial class Room : Node3D
                 var r = (i + 1) % _shapeV[x].Length;
                 var s = r + offset;
 
-                GD.Print("WALL POINTS: [" + p.ToString() + ", " + q.ToString() + ", " + r.ToString() + ", " + s.ToString() + "] | Length: [" + normals.Count + "]");
+                var norm = CalcNormal(verts[p], verts[q], verts[r]);
+                var norm4 = new Vector4(norm.X, norm.Y, norm.Z, 1);
 
-                indices.AddRange(new[] { q, p, s });
+                normals[p] += norm4;
+                normals[q] += norm4;
+                normals[r] += norm4;
+
+                indices.AddRange(new[] { s, p, q });
                 indices.AddRange(new[] { r, p, s });
-
-                //Flip normal for columns so they face outward
-                var norm = i == 0 ? CalcNormal(verts[q], verts[p], verts[s]) : CalcNormal(verts[s], verts[p], verts[q]);
-                normals[p] += norm;
-                normCount[p] += 1;
-                normals[q] += norm;
-                normCount[q] += 1;
-                normals[r] += norm;
-                normCount[r] += 1;
-                normals[s] += norm;
-                normCount[s] += 1;
             }
         }
-
-        //Average normals based on amount of triangles that share it
-        for (int i = 0; i < _shapeV[0].Length; i++) normals[i] /= normCount[i];
 
         //Assign mesh data
         surfaceArr[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
         surfaceArr[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
-        surfaceArr[(int)Mesh.ArrayType.Normal] = normals.ToArray();
+        surfaceArr[(int)Mesh.ArrayType.Normal] = normals.Select(v4 => new Vector3(v4.X, v4.Y, v4.Z) / v4.W).ToArray();
         surfaceArr[(int)Mesh.ArrayType.Index] = indices.ToArray();
 
         //Add mesh to node
@@ -201,5 +210,10 @@ public partial class Room : Node3D
             a.Z * b.X - a.X * b.Z,
             a.X * b.Y - a.Y * b.X
         );
+    }
+
+    private bool Clockwise(Vector3 p, Vector3 q, Vector3 r)
+    {
+        return p.X * q.Z - p.Z * q.X + q.X * r.Z - q.Z * r.X + r.X * p.Z - r.Z * p.X < 0;
     }
 }
