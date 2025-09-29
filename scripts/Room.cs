@@ -12,16 +12,19 @@ public partial class Room : Node3D
     private Polygon2D? _border = null;
     private IEnumerable<Polygon2D> _holes = Array.Empty<Polygon2D>();
 
-    [Export]
-    public string RoomName { get; set; } = "";
+    [ExportCategory("Room Parameters")]
     [Export(PropertyHint.Enum, "Floor,Ceiling,Both,Column")]
     public HoleOption Holes { get; set; } = HoleOption.Both;
     [Export]
     public float ReducePointScale { get; set; } = 50.0F;
     [Export]
     public float WallHeight { get; set; } = 1.0F;
+    [ExportCategory("Save Options")]
+    [Export]
+    public string RoomName { get; set; } = "";
     [Export]
     public bool SaveMesh { get; set; } = false;
+    [ExportCategory("Rebuild")]
     [ExportToolButton("Rebuild Mesh")]
     public Callable RebuildButton => Callable.From(RebuildMesh);
 
@@ -29,9 +32,9 @@ public partial class Room : Node3D
     {
         base._Ready();
 
-        if (ResourceLoader.Exists("res://room_" + RoomName))
+        if (ResourceLoader.Exists("res://room_" + RoomName + ".tres"))
         {
-            ArrayMesh aMesh = ResourceLoader.Load<ArrayMesh>("res://room_" + RoomName);
+            ArrayMesh aMesh = ResourceLoader.Load<ArrayMesh>("res://room_" + RoomName + ".tres");
             AddMesh(aMesh);
             return;
         }
@@ -88,7 +91,6 @@ public partial class Room : Node3D
         }
 
         //Move points over by origin
-        GD.Print("SHAPE V LENGTH: [" + _shapeV.Length.ToString() + "]");
         for (int i = 0; i < _shapeV.Length; i++)
         {
             for (int j = 0; j < _shapeV[i].Length; j++) _shapeV[i][j] = _shapeV[i][j] + min - max;
@@ -157,14 +159,14 @@ public partial class Room : Node3D
         }
 
         //Add triangles for walls and calculate normals per face
-        //TODO: Figure out UVs for walls, and in general
+        var toAdd = 0;
         for (int x = 0; x < (Holes == HoleOption.Column ? _shapeV.Length : 1); x++)
         {
             for (int i = 0; i < _shapeV[x].Length; i++)
             {
-                var p = i;
+                var p = i + toAdd;
                 var q = p + offset;
-                var r = (i + 1) % _shapeV[x].Length;
+                var r = ((i + 1) % _shapeV[x].Length) + toAdd;
                 var s = r + offset;
 
                 var norm = CalcNormal(verts[p], verts[q], verts[r]);
@@ -173,10 +175,19 @@ public partial class Room : Node3D
                 normals[p] += norm4;
                 normals[q] += norm4;
                 normals[r] += norm4;
+                normals[s] += norm4;
 
-                indices.AddRange(new[] { s, p, q });
-                indices.AddRange(new[] { r, p, s });
+                if (x == 0)
+                {
+                    indices.AddRange(new[] { s, p, q });
+                    indices.AddRange(new[] { r, p, s });
+                } else
+                {
+                    indices.AddRange(new[] { q, p, s });
+                    indices.AddRange(new[] { s, p, r });
+                }
             }
+            toAdd += _shapeV[x].Length;
         }
 
         //Assign mesh data
@@ -190,8 +201,11 @@ public partial class Room : Node3D
         aMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, surfaceArr);
         AddMesh(aMesh);
 
+        GD.Print("Save Mesh? [" + (SaveMesh ? "TRUE" : "FALSE") + "]");
+        GD.Print("Save As: [" + RoomName + "]");
+
         //Save mesh if willing and able
-        if (SaveMesh && !String.IsNullOrWhiteSpace(RoomName)) ResourceSaver.Save(aMesh, "res://room_" + RoomName, ResourceSaver.SaverFlags.Compress);
+        if (SaveMesh && !String.IsNullOrWhiteSpace(RoomName)) ResourceSaver.Save(aMesh, "res://room_" + RoomName + ".tres", ResourceSaver.SaverFlags.Compress);
     }
 
     private void AddMesh(ArrayMesh aMesh)
@@ -212,6 +226,7 @@ public partial class Room : Node3D
         );
     }
 
+    //Used for ceiling and floor, where the Y axis is depth
     private bool Clockwise(Vector3 p, Vector3 q, Vector3 r)
     {
         return p.X * q.Z - p.Z * q.X + q.X * r.Z - q.Z * r.X + r.X * p.Z - r.Z * p.X < 0;
